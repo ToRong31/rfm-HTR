@@ -62,7 +62,12 @@ default_p_batch_size = 8
 
 # Khởi tạo các mô hình với cùng tham số cơ bản
 laplace_model = LaplaceRFM(bandwidth=1., device=DEVICE, mem_gb=DEV_MEM_GB, diag=False, p_batch_size=default_p_batch_size)
+generalized_model = GeneralizedLaplaceRFM(bandwidth=1., device=DEVICE, mem_gb=DEV_MEM_GB, diag=False, p_batch_size=default_p_batch_size)
+gauss_model = GaussRFM(bandwidth=1., device=DEVICE, mem_gb=DEV_MEM_GB, diag=False, p_batch_size=default_p_batch_size)
+ntk_model = NTKModel(device=DEVICE, mem_gb=DEV_MEM_GB, diag=False, p_batch_size=default_p_batch_size)
 
+# Huấn luyện từng mô hình và ghi log, truyền thêm M_batch_size và p_batch_size để tránh lỗi
+logger.info("Training LaplaceRFM")
 laplace_model.fit(
     train_loader, 
     test_loader, 
@@ -72,4 +77,42 @@ laplace_model.fit(
     total_points_to_sample=subset_size,
     M_batch_size=batch_size,
     p_batch_size=default_p_batch_size
- )
+)
+
+logger.info("Training GeneralizedLaplaceRFM")
+generalized_model.fit(
+    train_loader, 
+    test_loader, 
+    loader=True, 
+    iters=3,
+    classification=True,
+    total_points_to_sample=subset_size,
+    M_batch_size=batch_size,
+    p_batch_size=default_p_batch_size,
+    return_best_params=True
+)
+
+logger.info("Training GaussRFM")
+gauss_model.fit(
+    train_loader, 
+    test_loader, 
+    loader=True, 
+    iters=3,
+    classification=True,
+    total_points_to_sample=subset_size,
+    M_batch_size=batch_size,
+    p_batch_size=default_p_batch_size,
+    return_best_params=True
+)
+
+logger.info("Training NTKModel")
+ntk_model.fit(
+    train_loader, 
+    test_loader, 
+    loader=True, 
+    iters=3,
+    classification=True,
+    total_points_to_sample=subset_size,
+    M_batch_size=batch_size,
+    p_batch_size=default_p_batch_size
+)
