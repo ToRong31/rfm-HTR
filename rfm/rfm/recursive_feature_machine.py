@@ -89,10 +89,10 @@ class RecursiveFeatureMachine(torch.nn.Module):
 
 
 
-def fit_predictor_eigenpro(self, centers, targets, X_val=None, y_val=None, bs=None, 
-                          lr_scale=1.0, verbose=True, epochs=100, classification=False, **kwargs):
+def fit_predictor_eigenpro(self, centers, targets, bs=None, lr_scale=1.0, verbose=True, 
+                          classification=False, epochs=100, X_val=None, y_val=None, **kwargs):
     """
-    Fit a kernel model using standard eigendecomposition (without EigenPro optimization).
+    Fit a kernel model using standard eigendecomposition.
     
     Parameters:
     -----------
@@ -100,20 +100,20 @@ def fit_predictor_eigenpro(self, centers, targets, X_val=None, y_val=None, bs=No
         Centers for the kernel approximation
     targets: torch.Tensor
         Target values for training
-    X_val: torch.Tensor, optional
-        Validation data
-    y_val: torch.Tensor, optional
-        Validation targets
     bs: int, optional
         Batch size for training
     lr_scale: float
         Learning rate scaling factor
     verbose: bool
         Whether to print progress information
-    epochs: int
-        Number of training epochs
     classification: bool
         Whether this is a classification task
+    epochs: int
+        Number of training epochs
+    X_val: torch.Tensor, optional
+        Validation data
+    y_val: torch.Tensor, optional
+        Validation targets
     **kwargs: 
         Additional arguments to pass to the KernelModel.fit method
     
@@ -126,11 +126,11 @@ def fit_predictor_eigenpro(self, centers, targets, X_val=None, y_val=None, bs=No
     # Initialize kernel model
     self.model = KernelModel(self.kernel, centers, n_classes, device=self.device)
     
-    # Prepare validation data if provided
+    # Use training data as validation if not provided
     if X_val is None or y_val is None:
-        X_val, y_val = centers, targets  # Use training data as validation if none provided
+        X_val, y_val = centers, targets
     
-    # Set appropriate metrics based on task type
+    # Set appropriate metrics based on task
     metrics = ['mse']
     if classification:
         if n_classes == 1:
@@ -138,7 +138,7 @@ def fit_predictor_eigenpro(self, centers, targets, X_val=None, y_val=None, bs=No
         else:
             metrics += ['multiclass-acc']
     
-    # Fit model with modified parameters to work with standard eigendecomposition
+    # Fit model with standard eigendecomposition parameters
     results = self.model.fit(
         centers, targets, 
         X_val, y_val,
@@ -155,6 +155,8 @@ def fit_predictor_eigenpro(self, centers, targets, X_val=None, y_val=None, bs=No
     )
     
     return self.model.weight
+
+
 
 
 
