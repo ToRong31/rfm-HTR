@@ -89,11 +89,73 @@ class RecursiveFeatureMachine(torch.nn.Module):
 
 
 
-    def fit_predictor_eigenpro(self, centers, targets, bs, lr_scale, verbose, **kwargs):
-        n_classes = 1 if targets.dim()==1 else targets.shape[-1]
-        self.model = KernelModel(self.kernel, centers, n_classes, device=self.device)
-        _ = self.model.fit(centers, targets, verbose=verbose, mem_gb=self.mem_gb, bs=bs, lr_scale=lr_scale, **kwargs)
-        return self.model.weight
+def fit_predictor_eigenpro(self, centers, targets, X_val=None, y_val=None, bs=None, 
+                          lr_scale=1.0, verbose=True, epochs=100, classification=False, **kwargs):
+    """
+    Fit a kernel model using standard eigendecomposition (without EigenPro optimization).
+    
+    Parameters:
+    -----------
+    centers: torch.Tensor
+        Centers for the kernel approximation
+    targets: torch.Tensor
+        Target values for training
+    X_val: torch.Tensor, optional
+        Validation data
+    y_val: torch.Tensor, optional
+        Validation targets
+    bs: int, optional
+        Batch size for training
+    lr_scale: float
+        Learning rate scaling factor
+    verbose: bool
+        Whether to print progress information
+    epochs: int
+        Number of training epochs
+    classification: bool
+        Whether this is a classification task
+    **kwargs: 
+        Additional arguments to pass to the KernelModel.fit method
+    
+    Returns:
+    --------
+    torch.Tensor: Model weights
+    """
+    n_classes = 1 if targets.dim()==1 else targets.shape[-1]
+    
+    # Initialize kernel model
+    self.model = KernelModel(self.kernel, centers, n_classes, device=self.device)
+    
+    # Prepare validation data if provided
+    if X_val is None or y_val is None:
+        X_val, y_val = centers, targets  # Use training data as validation if none provided
+    
+    # Set appropriate metrics based on task type
+    metrics = ['mse']
+    if classification:
+        if n_classes == 1:
+            metrics += ['binary-acc', 'f1', 'auc']
+        else:
+            metrics += ['multiclass-acc']
+    
+    # Fit model with modified parameters to work with standard eigendecomposition
+    results = self.model.fit(
+        centers, targets, 
+        X_val, y_val,
+        epochs=epochs, 
+        mem_gb=self.mem_gb,
+        bs=bs,
+        eta=None,  # Let KernelModel calculate learning rate based on eigenvalues
+        lr_scale=lr_scale,
+        n_train_eval=min(5000, len(centers)),
+        run_epoch_eval=verbose,
+        verbose=verbose,
+        classification=classification,
+        **kwargs
+    )
+    
+    return self.model.weight
+
 
 
     def predict(self, samples):
