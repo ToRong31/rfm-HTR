@@ -26,6 +26,7 @@ def euclidean_distances_M(samples, centers, M, squared=True):
     samples = torch.from_numpy(samples).to(M.device)  # match the device
     samples_norm2 = ((samples @ M) * samples).sum(-1)
 
+    centers = torch.from_numpy(centers).to(M.device).type(M.dtype)
 
     if samples is centers:
         centers_norm2 = samples_norm2
