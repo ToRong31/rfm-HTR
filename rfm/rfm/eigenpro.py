@@ -7,7 +7,7 @@ import torch.nn as nn
 import numpy as np
 from sklearn.metrics import roc_auc_score
 from scipy.linalg import eigh
-from nmf import multiplicative_update, nndsvd_initialization, random_initialization
+from .nmf import multiplicative_update, nndsvd_initialization, random_initialization
 
 # def asm_eigen_fn(samples, map_fn, top_q=None, alpha=0.95, seed=1, verbose=True):
 #     """
