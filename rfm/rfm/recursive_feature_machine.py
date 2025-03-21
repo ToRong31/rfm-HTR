@@ -1,4 +1,4 @@
-from .eigenpro import KernelModel
+from .eigenpro import KernelModel, asm_nmf_fn_custom
     
 import torch, numpy as np
 from torchmetrics.functional.classification import accuracy
@@ -7,6 +7,7 @@ from tqdm.contrib import tenumerate
 import hickle
 from .utils import matrix_sqrt
 from time import time
+import wandb
 
 class RecursiveFeatureMachine(torch.nn.Module):
 
@@ -47,8 +48,8 @@ class RecursiveFeatureMachine(torch.nn.Module):
                 self.M = torch.ones(centers.shape[-1], device=self.device, dtype=centers.dtype)
             else:
                 self.M = torch.eye(centers.shape[-1], device=self.device, dtype=centers.dtype)
-        if self.fit_using_eigenpro:
-            self.weights = self.fit_predictor_eigenpro(centers, targets, bs=bs, lr_scale=lr_scale, 
+        if self.fit_using_nmf:
+            self.weights = self.fit_predictor_nmf(centers, targets, bs=bs, lr_scale=lr_scale, 
                                                        verbose=verbose, classification=classification, 
                                                        **kwargs)
         else:
@@ -89,72 +90,63 @@ class RecursiveFeatureMachine(torch.nn.Module):
 
 
 
-    def fit_predictor_eigenpro(self, centers, targets, bs=None, lr_scale=1.0, verbose=True, 
-                            classification=False, epochs=100, X_val=None, y_val=None, **kwargs):
+    def fit_predictor_nmf(self, centers, targets, bs=None, lr_scale=1.0, verbose=True, 
+                      classification=False, epochs=100, X_val=None, y_val=None, 
+                        top_q=20, **kwargs):
         """
-        Fit a kernel model using standard eigendecomposition.
-        
-        Parameters:
-        -----------
-        centers: torch.Tensor
-            Centers for the kernel approximation
-        targets: torch.Tensor
-            Target values for training
-        bs: int, optional
-            Batch size for training
-        lr_scale: float
-            Learning rate scaling factor
-        verbose: bool
-            Whether to print progress information
-        classification: bool
-            Whether this is a classification task
-        epochs: int
-            Number of training epochs
-        X_val: torch.Tensor, optional
-            Validation data
-        y_val: torch.Tensor, optional
-            Validation targets
-        **kwargs: 
-            Additional arguments to pass to the KernelModel.fit method
-        
-        Returns:
-        --------
-        torch.Tensor: Model weights
+        Fit a kernel model using NMF-based kernel approximation.
         """
-        n_classes = 1 if targets.dim()==1 else targets.shape[-1]
-        
-        # Initialize kernel model
-        self.model = KernelModel(self.kernel, centers, n_classes, device=self.device)
-        
+
+        n_classes = 1 if targets.dim() == 1 else targets.shape[-1]
+
         # Use training data as validation if not provided
         if X_val is None or y_val is None:
             X_val, y_val = centers, targets
-        
-        # Set appropriate metrics based on task
+
+        # Compute NMF on kernel matrix approximation
+        W, H, norms = asm_nmf_fn_custom(centers.cpu().numpy(), self.kernel, rank=top_q)
+
+        if verbose:
+            print(f"NMF decomposition complete: W shape = {W.shape}, H shape = {H.shape}")
+
+        # Optionally store these for debugging / reuse
+        self.W_nmf = W
+        self.H_nmf = H
+        self.nmf_norms = norms
+
+        # Initialize kernel model (you may modify KernelModel to accept W, H if needed)
+        self.model = KernelModel(
+            self.kernel, centers, n_classes, device=self.device,
+            W=W, H=H, norms=norms  # assuming KernelModel accepts these
+        )
+
+        # Define metrics
         metrics = ['mse']
         if classification:
             if n_classes == 1:
                 metrics += ['binary-acc', 'f1', 'auc']
             else:
                 metrics += ['multiclass-acc']
-        
-        # Fit model with standard eigendecomposition parameters
+
+        # Fit the model
         results = self.model.fit(
             centers, targets, 
             X_val, y_val,
-            epochs=epochs, 
+            epochs=epochs,
             mem_gb=self.mem_gb,
             bs=bs,
-            eta=None,  # Let KernelModel calculate learning rate based on eigenvalues
+            eta=None,  # Optional: Let model compute learning rate
             lr_scale=lr_scale,
             n_train_eval=min(5000, len(centers)),
             run_epoch_eval=verbose,
             verbose=verbose,
             classification=classification,
+            top_q=top_q,
             **kwargs
         )
-        
+
         return self.model.weight
+
 
 
 
@@ -171,13 +163,13 @@ class RecursiveFeatureMachine(torch.nn.Module):
             return_Ms=False, lr_scale=1, total_points_to_sample=50000, 
             **kwargs):
                 
-        self.fit_using_eigenpro = (method.lower()=='eigenpro')
+        self.fit_using_nmf = (method.lower()=='nmf')
         use_sqrtM = self.kernel_type in ['laplacian_gen']
         
         if iters is None:
             iters = self.iters
 
-        if class_weight is not None and self.fit_using_eigenpro:
+        if class_weight is not None and self.fit_using_nmf:
             raise ValueError("Class weights are not supported for EigenPro")
 
         if verbose and class_weight == 'inverse':

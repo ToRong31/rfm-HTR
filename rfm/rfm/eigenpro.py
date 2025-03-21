@@ -48,21 +48,28 @@ def asm_nmf_fn_custom(samples, map_fn, rank=10, max_iter=100, init_mode='nndsvd'
     return torch.from_numpy(W).float(), torch.from_numpy(H).float(), norms
 
 
-class KernelModel(nn.Module):
-    '''Fast Kernel Regression using EigenPro iteration.'''
-    def __init__(self, kernel_fn, centers, y_dim, device="cuda"):
-        super(KernelModel, self).__init__()
+class KernelModel(nn.Module):  
+    def __init__(self, kernel_fn, centers, out_dim, device='cpu', W=None, H=None):
         self.kernel_fn = kernel_fn
-        self.n_centers, self.x_dim = centers.shape
+        self.centers = centers
+        self.out_dim = out_dim
         self.device = device
-        self.pinned_list = []
+        self.weight = torch.zeros(len(centers), out_dim, device=device)
 
-        self.centers = self.tensor(centers, release=True, dtype=centers.dtype)
-        self.weight = self.tensor(torch.zeros(
-            self.n_centers, y_dim), release=True, dtype=centers.dtype)
-        
-        self.save_kernel_matrix = self.n_centers <= 85000
-        self.kernel_matrix = [] if self.save_kernel_matrix else None
+        # Nếu truyền vào W, H từ NMF thì lưu lại
+        self.W = torch.from_numpy(W).float().to(device) if W is not None else None
+        self.H = torch.from_numpy(H).float().to(device) if H is not None else None
+        self.use_nmf = self.W is not None and self.H is not None
+
+        # Nếu dùng kernel thường thì sẽ tính kernel matrix
+        if not self.use_nmf:
+            self.kernel_matrix = self.kernel_fn(centers, centers).to(device)
+        else:
+            self.kernel_matrix = self.W @ self.H  # Approximation bằng NMF
+
+        # Di chuyển về đúng device
+        self.kernel_matrix = self.kernel_matrix.to(device)
+
 
     def __del__(self):
         for pinned in self.pinned_list:
