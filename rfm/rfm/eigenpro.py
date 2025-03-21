@@ -58,9 +58,11 @@ class KernelModel(nn.Module):
         self.out_dim = out_dim
         self.device = device
         self.weight = torch.zeros(len(centers), out_dim, device=device)
+        self.pinned_list = []  # prevents destructor issues
+
 
         # Nếu truyền vào W, H từ NMF thì lưu lại
-        self.W = torch.from_numpy(W).float().to(device) if W is not None else None
+        self.W = W.float().to(device) if isinstance(W, torch.Tensor) else torch.from_numpy(W).float().to(device)
         self.H = torch.from_numpy(H).float().to(device) if H is not None else None
         self.norms = norms=torch.from_numpy(norms).float().to(device) if norms is not None else None
         self.use_nmf = self.W is not None and self.H is not None
