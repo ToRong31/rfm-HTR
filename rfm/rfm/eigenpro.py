@@ -63,9 +63,10 @@ class KernelModel(nn.Module):
 
         # Nếu truyền vào W, H từ NMF thì lưu lại
         self.W = W.float().to(device) if isinstance(W, torch.Tensor) else torch.from_numpy(W).float().to(device)
-        self.H = torch.from_numpy(H).float().to(device) if H is not None else None
-        self.norms = norms=torch.from_numpy(norms).float().to(device) if norms is not None else None
+        self.H = H.float().to(device) if isinstance(H, torch.Tensor) else torch.from_numpy(H).float().to(device) if H is not None else None
+        self.norms = torch.from_numpy(norms).float().to(device) if norms is not None else None
         self.use_nmf = self.W is not None and self.H is not None
+
 
         # Nếu dùng kernel thường thì sẽ tính kernel matrix
         if not self.use_nmf:
