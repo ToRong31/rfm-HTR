@@ -61,11 +61,12 @@ class KernelModel(nn.Module):
         self.pinned_list = []  # prevents destructor issues
 
 
-        # Nếu truyền vào W, H từ NMF thì lưu lại
+
         self.W = W.float().to(device) if isinstance(W, torch.Tensor) else torch.from_numpy(W).float().to(device)
         self.H = H.float().to(device) if isinstance(H, torch.Tensor) else torch.from_numpy(H).float().to(device) if H is not None else None
-        self.norms = torch.from_numpy(norms).float().to(device) if norms is not None else None
+        self.norms = torch.from_numpy(np.array(norms)).float().to(device) if norms is not None else None
         self.use_nmf = self.W is not None and self.H is not None
+
 
 
         # Nếu dùng kernel thường thì sẽ tính kernel matrix
