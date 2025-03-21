@@ -157,7 +157,7 @@ class RecursiveFeatureMachine(torch.nn.Module):
         return out.to(samples.device)
 
 
-    def fit(self, train_data, test_data, iters=None, method='lstsq', 
+    def fit(self, train_data, test_data, iters=None, method='nmf', 
             classification=True, verbose=True, M_batch_size=None, 
             class_weight=None, return_best_params=False, bs=None, 
             return_Ms=False, lr_scale=1, total_points_to_sample=50000, 
@@ -580,7 +580,7 @@ if __name__ == "__main__":
     model.fit(
         (X_train, y_train), 
         (X_test, y_test), 
-        loader=False, method='eigenpro', epochs=15, print_every=5,
+        loader=False, method='nmf', epochs=15, print_every=5,
         iters=5,
         classif=False
     ) 
