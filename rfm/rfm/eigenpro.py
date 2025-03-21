@@ -7,29 +7,45 @@ import torch.nn as nn
 import numpy as np
 from sklearn.metrics import roc_auc_score
 from scipy.linalg import eigh
+from nmf import multiplicative_update, nndsvd_initialization, random_initialization
 
-def asm_eigen_fn(samples, map_fn, top_q=None, alpha=0.95, seed=1, verbose=True):
-    """
-    Compute standard eigendecomposition of the kernel matrix without EigenPro.
-    """
-    np.random.seed(seed)
-    start = time.time()
+# def asm_eigen_fn(samples, map_fn, top_q=None, alpha=0.95, seed=1, verbose=True):
+#     """
+#     Compute standard eigendecomposition of the kernel matrix without EigenPro.
+#     """
+#     np.random.seed(seed)
+#     start = time.time()
 
-    # Compute kernel matrix
+#     # Compute kernel matrix
+#     kernel_matrix = map_fn(samples, samples)
+
+#     # Eigendecomposition using scipy
+#     eigvals, eigvecs = eigh(kernel_matrix)
+
+#     # Reorder eigenvalues and eigenvectors (largest to smallest)
+#     eigvals = torch.from_numpy(eigvals[::-1]).float()
+#     eigvecs = torch.from_numpy(eigvecs[:, ::-1]).float()
+
+#     if verbose:
+#         print("Eigendecomposition time: %.2f seconds" % (time.time() - start))
+#         print(f"Largest eigenvalue: {eigvals[0].item()}")
+
+#     return eigvals, eigvecs
+
+def asm_nmf_fn_custom(samples, map_fn, rank=10, max_iter=100, init_mode='nndsvd', verbose=True):
+    """
+    Approximate kernel matrix using custom NMF with multiplicative update.
+    """
     kernel_matrix = map_fn(samples, samples)
+    kernel_matrix = np.maximum(kernel_matrix, 0)  # Ensure non-negativity
 
-    # Eigendecomposition using scipy
-    eigvals, eigvecs = eigh(kernel_matrix)
-
-    # Reorder eigenvalues and eigenvectors (largest to smallest)
-    eigvals = torch.from_numpy(eigvals[::-1]).float()
-    eigvecs = torch.from_numpy(eigvecs[:, ::-1]).float()
+    W, H, norms = multiplicative_update(kernel_matrix, k=rank, max_iter=max_iter, init_mode=init_mode)
 
     if verbose:
-        print("Eigendecomposition time: %.2f seconds" % (time.time() - start))
-        print(f"Largest eigenvalue: {eigvals[0].item()}")
+        print(f"NMF with init='{init_mode}' completed.")
+        print(f"Final reconstruction error (Frobenius norm): {norms[-1]:.4f}")
 
-    return eigvals, eigvecs
+    return torch.from_numpy(W).float(), torch.from_numpy(H).float(), norms
 
 
 class KernelModel(nn.Module):
@@ -183,18 +199,25 @@ class KernelModel(nn.Module):
         samples = self.centers[sample_ids]
         
         # Compute eigendecomposition
-        _, scale, top_eigval, beta = asm_eigen_fn(
-            samples, self.kernel_fn, top_q, bs_gpu, alpha=.95, seed=seed, verbose=verbose)
+        W, H, norms = asm_nmf_fn_custom(samples.cpu().numpy(), self.kernel_fn, rank=top_q)
+
+        # Compute approximate kernel matrix
+        K_approx = np.dot(W, H)  # K ≈ W @ H
+
+        # Convert to torch tensor and store
+        self.kernel_matrix = torch.from_numpy(K_approx).to(self.device)
         
-        # Calculate learning rate
+        # Lấy chuẩn Frobenius đầu tiên để estimate learning rate (đơn giản)
+        approx_error = norms[0]
         if eta is None:
-            eta = 1.0 / top_eigval  # Simplify learning rate based on largest eigenvalue
-            bs = min(bs_gpu, n_samples) if bs is None else min(bs, bs_gpu, n_samples)
-        
+            eta = 1.0 / (approx_error + 1e-6)  # tránh chia cho 0
+
+        bs = min(bs_gpu, n_samples) if bs is None else min(bs, bs_gpu, n_samples)
+
         if verbose:
-            print("n_subsamples=%d, bs_gpu=%d, eta=%.2f, bs=%d, top_eigval=%.2e" %
-                  (n_subsamples, bs_gpu, eta, bs, top_eigval))
-        
+            print("n_subsamples=%d, bs_gpu=%d, eta=%.6f, bs=%d, nmf_init_error=%.4f" %
+                (n_subsamples, bs_gpu, eta, bs, approx_error))
+
         eta = self.tensor(lr_scale * eta / bs, dtype=torch.float)
         
         res = dict()
@@ -220,7 +243,7 @@ class KernelModel(nn.Module):
 
                 for batch_ids in tqdm(np.array_split(epoch_ids, n_samples // bs)):
                     batch_ids = self.tensor(batch_ids)
-                    x_batch = self.tensor(X_train[batch_ids], dtype=X_train.dtype)
+                    x_batch = self.tensor((W @ H)[batch_ids], dtype=X_train.dtype)
                     y_batch = self.tensor(y_train[batch_ids], dtype=y_train.dtype)
                     self.gradient_iterate(x_batch, y_batch, eta, batch_ids)
 
