@@ -77,6 +77,7 @@ laplace_model.fit(
     total_points_to_sample=subset_size,
     M_batch_size=batch_size,
     p_batch_size=default_p_batch_size
+
  )
 
 logger.info("Training GeneralizedLaplaceRFM")

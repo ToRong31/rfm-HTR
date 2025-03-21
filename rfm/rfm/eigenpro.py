@@ -52,7 +52,7 @@ def asm_nmf_fn_custom(samples, map_fn, rank=10, max_iter=100, init_mode='nndsvd'
 
 
 class KernelModel(nn.Module):  
-    def __init__(self, kernel_fn, centers, out_dim, device='cpu', W=None, H=None):
+    def __init__(self, kernel_fn, centers, out_dim, device='cpu', W=None, H=None,norms=None):
         self.kernel_fn = kernel_fn
         self.centers = centers
         self.out_dim = out_dim
@@ -62,6 +62,7 @@ class KernelModel(nn.Module):
         # Nếu truyền vào W, H từ NMF thì lưu lại
         self.W = torch.from_numpy(W).float().to(device) if W is not None else None
         self.H = torch.from_numpy(H).float().to(device) if H is not None else None
+        self.norms = norms=torch.from_numpy(norms).float().to(device) if norms is not None else None
         self.use_nmf = self.W is not None and self.H is not None
 
         # Nếu dùng kernel thường thì sẽ tính kernel matrix
@@ -76,7 +77,7 @@ class KernelModel(nn.Module):
 
     def __del__(self):
         for pinned in self.pinned_list:
-            _ = pinned.to("cpu")
+            _ = pinned.to("gpu")
 
     def tensor(self, data, dtype=None, release=False):
         if torch.is_tensor(data):
