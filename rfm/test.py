@@ -77,42 +77,42 @@ laplace_model.fit(
     total_points_to_sample=subset_size,
     M_batch_size=batch_size,
     p_batch_size=default_p_batch_size
-)
+ )
 
-logger.info("Training GeneralizedLaplaceRFM")
-generalized_model.fit(
-    train_loader, 
-    test_loader, 
-    loader=True, 
-    iters=3,
-    classification=True,
-    total_points_to_sample=subset_size,
-    M_batch_size=batch_size,
-    p_batch_size=default_p_batch_size,
-    return_best_params=True
-)
+# logger.info("Training GeneralizedLaplaceRFM")
+# generalized_model.fit(
+#     train_loader, 
+#     test_loader, 
+#     loader=True, 
+#     iters=3,
+#     classification=True,
+#     total_points_to_sample=subset_size,
+#     M_batch_size=batch_size,
+#     p_batch_size=default_p_batch_size,
+#     return_best_params=True
+# )
 
-logger.info("Training GaussRFM")
-gauss_model.fit(
-    train_loader, 
-    test_loader, 
-    loader=True, 
-    iters=3,
-    classification=True,
-    total_points_to_sample=subset_size,
-    M_batch_size=batch_size,
-    p_batch_size=default_p_batch_size,
-    return_best_params=True
-)
+# logger.info("Training GaussRFM")
+# gauss_model.fit(
+#     train_loader, 
+#     test_loader, 
+#     loader=True, 
+#     iters=3,
+#     classification=True,
+#     total_points_to_sample=subset_size,
+#     M_batch_size=batch_size,
+#     p_batch_size=default_p_batch_size,
+#     return_best_params=True
+# )
 
-logger.info("Training NTKModel")
-ntk_model.fit(
-    train_loader, 
-    test_loader, 
-    loader=True, 
-    iters=3,
-    classification=True,
-    total_points_to_sample=subset_size,
-    M_batch_size=batch_size,
-    p_batch_size=default_p_batch_size
-)
+# logger.info("Training NTKModel")
+# ntk_model.fit(
+#     train_loader, 
+#     test_loader, 
+#     loader=True, 
+#     iters=3,
+#     classification=True,
+#     total_points_to_sample=subset_size,
+#     M_batch_size=batch_size,
+#     p_batch_size=default_p_batch_size
+# )
