@@ -37,8 +37,11 @@ def asm_nmf_fn_custom(samples, map_fn, rank=10, max_iter=100, init_mode='nndsvd'
     Approximate kernel matrix using custom NMF with multiplicative update.
     """
     kernel_matrix = map_fn(samples, samples)
-    kernel_matrix = np.maximum(kernel_matrix, 0)  # Ensure non-negativity
 
+    if isinstance(kernel_matrix, torch.Tensor):
+        kernel_matrix = kernel_matrix.cpu().numpy()
+    # Ensure non-negativity
+    kernel_matrix = np.maximum(kernel_matrix, 0) 
     W, H, norms = multiplicative_update(kernel_matrix, k=rank, max_iter=max_iter, init_mode=init_mode)
 
     if verbose:
