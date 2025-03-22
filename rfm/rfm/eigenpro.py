@@ -1,4 +1,3 @@
-'''Construct kernel model with EigenPro optimizer.'''
 import collections
 import time
 import torch
@@ -6,82 +5,61 @@ from tqdm import tqdm
 import torch.nn as nn
 import numpy as np
 from sklearn.metrics import roc_auc_score
-from scipy.linalg import eigh
-from .nmf import multiplicative_update, nndsvd_initialization, random_initialization
+from .nmf import random_initialization, nndsvd_initialization,multiplicative_update
 
-# def asm_eigen_fn(samples, map_fn, top_q=None, alpha=0.95, seed=1, verbose=True):
-#     """
-#     Compute standard eigendecomposition of the kernel matrix without EigenPro.
-#     """
-#     np.random.seed(seed)
-#     start = time.time()
-
-#     # Compute kernel matrix
-#     kernel_matrix = map_fn(samples, samples)
-
-#     # Eigendecomposition using scipy
-#     eigvals, eigvecs = eigh(kernel_matrix)
-
-#     # Reorder eigenvalues and eigenvectors (largest to smallest)
-#     eigvals = torch.from_numpy(eigvals[::-1]).float()
-#     eigvecs = torch.from_numpy(eigvecs[:, ::-1]).float()
-
-#     if verbose:
-#         print("Eigendecomposition time: %.2f seconds" % (time.time() - start))
-#         print(f"Largest eigenvalue: {eigvals[0].item()}")
-
-#     return eigvals, eigvecs
-
-def asm_nmf_fn_custom(samples, map_fn, rank=10, max_iter=100, init_mode='nndsvd', verbose=True):
+def nmf_update(A, rank, max_iter, init_mode='nndsvd'):
     """
-    Approximate kernel matrix using custom NMF with multiplicative update.
+    Perform Multiplicative Update (MU) algorithm for Non-negative Matrix Factorization (NMF).
+
+    Parameters:
+    - A: Input matrix
+    - rank: Rank of the factorization
+    - max_iter: Maximum number of iterations
+    - init_mode: Initialization mode ('random' or 'nndsvd')
+
+    Returns:
+    - W: Factorized matrix W
+    - H: Factorized matrix H
     """
-    kernel_matrix = map_fn(samples, samples)
+    if init_mode == 'random':
+        W, H = random_initialization(A, rank)
+    elif init_mode == 'nndsvd':
+        W, H = nndsvd_initialization(A, rank)
 
-    if isinstance(kernel_matrix, torch.Tensor):
-        kernel_matrix = kernel_matrix.cpu().numpy()
-    # Ensure non-negativity
-    kernel_matrix = np.maximum(kernel_matrix, 0) 
-    W, H, norms = multiplicative_update(kernel_matrix, k=rank, max_iter=max_iter, init_mode=init_mode)
+    epsilon = 1.0e-10
+    for _ in range(max_iter):
+        # Update H
+        W_TA = W.T @ A
+        W_TWH = W.T @ W @ H + epsilon
+        H = H * (W_TA / W_TWH)
 
-    if verbose:
-        print(f"NMF with init='{init_mode}' completed.")
-        print(f"Final reconstruction error (Frobenius norm): {norms[-1]:.4f}")
+        # Update W
+        AH_T = A @ H.T
+        WHH_T = W @ H @ H.T + epsilon
+        W = W * (AH_T / WHH_T)
 
-    return torch.from_numpy(W).float(), torch.from_numpy(H).float(), norms
+    return W, H
 
 
-class KernelModel(nn.Module):  
-    def __init__(self, kernel_fn, centers, out_dim, device='cpu', W=None, H=None,norms=None):
+class KernelModel(nn.Module):
+    '''Fast Kernel Regression using NMF iteration.'''
+    def __init__(self, kernel_fn, centers, y_dim, device="cuda"):
+        super(KernelModel, self).__init__()
         self.kernel_fn = kernel_fn
-        self.centers = centers
-        self.out_dim = out_dim
+        self.n_centers, self.x_dim = centers.shape
         self.device = device
-        self.weight = torch.zeros(len(centers), out_dim, device=device)
-        self.pinned_list = []  # prevents destructor issues
+        self.pinned_list = []
 
+        self.centers = self.tensor(centers, release=True, dtype=centers.dtype)
+        self.weight = self.tensor(torch.zeros(
+            self.n_centers, y_dim), release=True, dtype=centers.dtype)
 
-
-        self.W = W.float().to(device) if isinstance(W, torch.Tensor) else torch.from_numpy(W).float().to(device)
-        self.H = H.float().to(device) if isinstance(H, torch.Tensor) else torch.from_numpy(H).float().to(device) if H is not None else None
-        self.norms = torch.from_numpy(np.array(norms)).float().to(device) if norms is not None else None
-        self.use_nmf = self.W is not None and self.H is not None
-
-
-
-        # Nếu dùng kernel thường thì sẽ tính kernel matrix
-        if not self.use_nmf:
-            self.kernel_matrix = self.kernel_fn(centers, centers).to(device)
-        else:
-            self.kernel_matrix = self.W @ self.H  # Approximation bằng NMF
-
-        # Di chuyển về đúng device
-        self.kernel_matrix = self.kernel_matrix.to(device)
-
+        self.save_kernel_matrix = self.n_centers <= 85000
+        self.kernel_matrix = [] if self.save_kernel_matrix else None
 
     def __del__(self):
         for pinned in self.pinned_list:
-            _ = pinned.to("gpu")
+            _ = pinned.to("cpu")
 
     def tensor(self, data, dtype=None, release=False):
         if torch.is_tensor(data):
@@ -110,7 +88,7 @@ class KernelModel(nn.Module):
         if weight is None:
             weight = self.weight
         kmat = self.get_kernel_matrix(batch, batch_ids)
-        if save_kernel_matrix: # only call if self.kernel_matrix is a list
+        if save_kernel_matrix:  # only call if self.kernel_matrix is a list
             self.kernel_matrix.append((batch_ids.cpu(), kmat.cpu()))
         pred = kmat.mm(weight)
         return pred
@@ -120,29 +98,25 @@ class KernelModel(nn.Module):
         grad = pred - labels
         return grad
 
-    @staticmethod
-    def _compute_opt_params(bs, bs_gpu, beta, top_eigval):
-        if bs is None:
-            bs = min(np.int32(beta / top_eigval + 1), bs_gpu)
+    def nmf_iterate(self, x_batch, y_batch, rank, max_iter, init_mode='nndsvd'):
+        # Create matrix A for NMF
+        kmat = self.get_kernel_matrix(x_batch, None)  # kernel_fn(x_batch, self.centers)
+        A = kmat.cpu().numpy()
 
-        if bs < beta / top_eigval + 1:
-            eta = bs / beta
-        else:
-            eta = 0.99 * 2 * bs / (beta + (bs - 1) * top_eigval)
-        return bs, float(eta)
+        # Perform NMF
+        W, H = nmf_update(A, rank, max_iter, init_mode)
 
-    def gradient_iterate(self, x_batch, y_batch, eta, batch_ids):
-        grad = self.primal_gradient(x_batch, y_batch, self.weight, batch_ids)
-        self.weight.index_add_(0, batch_ids, -eta * grad)
-        return
+        # Update weight
+        self.weight.data = torch.tensor(W, device=self.device, dtype=self.weight.dtype)
 
-    def evaluate(self, X_all, y_all, n_eval, bs, metrics=('mse')):
+    def evaluate(self, X_all, y_all, n_eval, bs,
+                 metrics=('mse')):
         p_list = []
         n_sample, _ = X_all.shape
         n_eval = n_sample if n_eval is None else n_eval
         eval_ids = np.random.choice(n_sample,
-                               min(n_sample, n_eval),
-                               replace=False)
+                                     min(n_sample, n_eval),
+                                     replace=False)
         n_batch = n_sample // min(n_sample, bs)
         for batch_ids in np.array_split(eval_ids, n_batch):
             x_batch = self.tensor(X_all[batch_ids], dtype=X_all.dtype)
@@ -172,69 +146,33 @@ class KernelModel(nn.Module):
         return eval_metrics
 
     def fit(self, X_train, y_train, X_val, y_val, epochs, mem_gb,
-        n_subsamples=None, top_q=None, bs=None, eta=None,
-        n_train_eval=5000, run_epoch_eval=True, lr_scale=1,
-        verbose=True, seed=1, classification=False, threshold=1e-5,
-        early_stopping_window_size=6):
-            
+            bs=None,
+            n_train_eval=5000, run_epoch_eval=True,
+            verbose=True, seed=1, classification=False, threshold=1e-5,
+            early_stopping_window_size=6, nmf_rank=5, nmf_max_iter=10, init_mode='nndsvd'):
+
         X_train = X_train.to(self.device)
         y_train = y_train.to(self.device)
         X_val = X_val.to(self.device)
         y_val = y_val.to(self.device)
-        assert(len(X_train)==len(y_train))
-        assert(len(X_val)==len(y_val))
-        
+
+        assert (len(X_train) == len(y_train))
+        assert (len(X_val) == len(y_val))
+
         if bs is not None:
             n_train_eval = min(bs, n_train_eval)
-            
         metrics = ('mse',)
         if classification:
             if y_train.shape[-1] == 1:
                 metrics += ('binary-acc', 'f1', 'auc')
             else:
                 metrics += ('multiclass-acc',)
-        
+
         n_samples, n_labels = y_train.shape
-        
-        if n_subsamples is None:
-            n_subsamples = min(n_samples, 12000)
-        n_subsamples = min(n_subsamples, n_samples)
-        
-        mem_bytes = (mem_gb - 1) * 1024**3 # preserve 1GB
-        bsizes = np.arange(n_subsamples)
-        mem_usages = ((self.x_dim + 3 * n_labels + bsizes + 1)
-                    * self.n_centers + n_subsamples * 1000) * 4
-        bs_gpu = np.sum(mem_usages < mem_bytes) # device-dependent batch size
-        
-        # Calculate batch size / learning rate
-        np.random.seed(seed)
-        sample_ids = np.random.choice(n_samples, n_subsamples, replace=False)
-        sample_ids = self.tensor(sample_ids)
-        print(f"sample_ids: {sample_ids}")
-        samples = self.centers[sample_ids]
-        
-        # Compute eigendecomposition
-        W, H, norms = asm_nmf_fn_custom(samples.cpu().numpy(), self.kernel_fn, rank=top_q)
-
-        # Compute approximate kernel matrix
-        K_approx = np.dot(W, H)  # K ≈ W @ H
-
-        # Convert to torch tensor and store
-        self.kernel_matrix = torch.from_numpy(K_approx).to(self.device)
-        
-        # Lấy chuẩn Frobenius đầu tiên để estimate learning rate (đơn giản)
-        approx_error = norms[0]
-        if eta is None:
-            eta = 1.0 / (approx_error + 1e-6)  # tránh chia cho 0
-
-        bs = min(bs_gpu, n_samples) if bs is None else min(bs, bs_gpu, n_samples)
 
         if verbose:
-            print("n_subsamples=%d, bs_gpu=%d, eta=%.6f, bs=%d, nmf_init_error=%.4f" %
-                (n_subsamples, bs_gpu, eta, bs, approx_error))
+            print(f"bs={bs}, nmf_rank={nmf_rank}, nmf_max_iter={nmf_max_iter}, init_mode={init_mode}")
 
-        eta = self.tensor(lr_scale * eta / bs, dtype=torch.float)
-        
         res = dict()
         initial_epoch = 0
         train_sec = 0  # training time in seconds
@@ -243,37 +181,35 @@ class KernelModel(nn.Module):
             best_metric = 0
         else:
             best_metric = float('inf')
-        
+
         # Add early stopping variables
         val_loss_history = []
         prev_val_metric = 0 if classification else float('inf')
 
         for epoch in range(epochs):
             start = time.time()
-            for _ in range(epoch - initial_epoch):
-                # Create a permutation of all indices
-                epoch_ids = np.random.permutation(n_samples)
+            epoch_ids = np.random.permutation(n_samples)
 
-                save_kernel_matrix = epoch==1 and self.save_kernel_matrix
+            save_kernel_matrix = epoch == 1 and self.save_kernel_matrix
 
-                for batch_ids in tqdm(np.array_split(epoch_ids, n_samples // bs)):
-                    batch_ids = self.tensor(batch_ids)
-                    x_batch = self.tensor((W @ H)[batch_ids], dtype=X_train.dtype)
-                    y_batch = self.tensor(y_train[batch_ids], dtype=y_train.dtype)
-                    self.gradient_iterate(x_batch, y_batch, eta, batch_ids)
+            for batch_ids in tqdm(np.array_split(epoch_ids, n_samples // bs)):
+                batch_ids = self.tensor(batch_ids)
+                x_batch = self.tensor(X_train[batch_ids], dtype=X_train.dtype)
+                y_batch = self.tensor(y_train[batch_ids], dtype=y_train.dtype)
 
-                    del x_batch, y_batch, batch_ids
+                self.nmf_iterate(x_batch, y_batch, nmf_rank, nmf_max_iter, init_mode)
+                del x_batch, y_batch, batch_ids
 
-                if save_kernel_matrix:
-                    print(f"Storing kernel matrix")
-                    # First concatenate all rows
-                    concat_matrix = torch.cat([pair[1] for pair in self.kernel_matrix], dim=0)
-                    # Get all batch indices and their positions
-                    all_batch_ids = torch.cat([pair[0] for pair in self.kernel_matrix])
-                    # Get sorting indices and reorder the matrix
-                    _, sort_indices = torch.sort(all_batch_ids)
-                    self.kernel_matrix = concat_matrix[sort_indices]
-                    self.kernel_matrix = self.kernel_matrix.to(self.device)
+            if save_kernel_matrix:
+                print(f"Storing kernel matrix")
+                # First concatenate all rows
+                concat_matrix = torch.cat([pair[1] for pair in self.kernel_matrix], dim=0)
+                # Get all batch indices and their positions
+                all_batch_ids = torch.cat([pair[0] for pair in self.kernel_matrix])
+                # Get sorting indices and reorder the matrix
+                _, sort_indices = torch.sort(all_batch_ids)
+                self.kernel_matrix = concat_matrix[sort_indices]
+                self.kernel_matrix = self.kernel_matrix.to(self.device)
 
             if run_epoch_eval:
                 train_sec += time.time() - start
@@ -324,25 +260,14 @@ class KernelModel(nn.Module):
                     val_loss_history.append(tv_score['mse'] >= prev_val_metric)
                 if len(val_loss_history) > early_stopping_window_size:
                     val_loss_history.pop(0)
-                    # Check if validation loss increased in majority of recent iterations
-                    if sum(val_loss_history) / len(val_loss_history) >= 0.6:  # 60% of recent iterations showed increase
-                        if verbose:
-                            print(f"Early stopping triggered: validation loss increased in majority of last {early_stopping_window_size} epochs")
+                    # Check if validation loss increases too many times...
+                    if sum(val_loss_history) >= early_stopping_window_size - 1:
+                        print(f"Early stopping at epoch {epoch}")
                         break
-                
-                if classification:
-                    prev_val_metric = tv_score['multiclass-acc'] if 'multiclass-acc' in tv_score else tv_score['binary-acc']
-                else:
-                    prev_val_metric = tv_score['mse']
+                prev_val_metric = tv_score['binary-acc'] if 'binary-acc' in tv_score else \
+                    tv_score['multiclass-acc'] if 'multiclass-acc' in tv_score else tv_score['mse']
 
-                if tr_score['mse'] < threshold:
-                    break
-
-            initial_epoch = epoch
-
-        self.weight = best_weights.to(self.device)
-
-        if self.kernel_matrix is not None:
-            del self.kernel_matrix
-
+        res['best_weights'] = best_weights if best_weights is not None else self.weight.cpu().clone()
+        self.weight = self.tensor(res['best_weights'])
+        print("DONE")
         return res
