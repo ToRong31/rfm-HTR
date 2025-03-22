@@ -5,7 +5,6 @@ from tqdm import tqdm
 import torch.nn as nn
 import numpy as np
 from sklearn.metrics import roc_auc_score
-from .nmf import multiplicative_update
 
 # Assume multiplicative_update, random_initialization, nndsvd_initialization are imported
 
@@ -13,7 +12,8 @@ def asm_nmf_fn_custom(samples, map_fn, rank=10, max_iter=100, init_mode='nndsvd'
     """
     Approximate kernel matrix using custom NMF with multiplicative update.
     """
-    kernel_matrix = map_fn(samples, samples)
+    # kernel_matrix = map_fn(samples, samples)
+    kernel_matrix = map_fn(samples, samples).cpu().numpy()
     kernel_matrix = np.maximum(kernel_matrix, 0)  # Ensure non-negativity
 
     W, H, norms = multiplicative_update(kernel_matrix, k=rank, max_iter=max_iter, init_mode=init_mode)
@@ -119,7 +119,7 @@ class KernelModel(nn.Module):
 
     def fit(self, X_train, y_train, X_val, y_val, epochs, mem_gb,
             n_subsamples=None, bs=None,
-            n_train_eval=5000, run_epoch_eval=True,
+            n_train_eval=5000, run_epoch_eval=True, lr_scale=1, 
             verbose=True, seed=1, classification=False, threshold=1e-5,
             early_stopping_window_size=6, nmf_rank=10, nmf_max_iter=100, nmf_init_mode='nndsvd'):
 
@@ -148,14 +148,21 @@ class KernelModel(nn.Module):
         np.random.seed(seed)
         sample_ids = np.random.choice(n_samples, n_subsamples, replace=False)
         sample_ids = self.tensor(sample_ids)
+        # print(f"sample_ids: {sample_ids}")
         samples = self.centers[sample_ids]
 
         # Prepare NMF function
+        # nmf_W, nmf_H, nmf_norms = asm_nmf_fn_custom(
+        #     samples.cpu().numpy(),
+        #     lambda x, y: self.kernel_fn(self.tensor(x), self.tensor(y)).cpu().numpy(),
+        #     rank=nmf_rank, max_iter=nmf_max_iter, init_mode=nmf_init_mode, verbose=verbose
+        # )
         nmf_W, nmf_H, nmf_norms = asm_nmf_fn_custom(
-            samples.cpu().numpy(),
-            lambda x, y: self.kernel_fn(self.tensor(x), self.tensor(y)).cpu().numpy(),
+            samples,
+            lambda x, y: self.kernel_fn(x, y),
             rank=nmf_rank, max_iter=nmf_max_iter, init_mode=nmf_init_mode, verbose=verbose
         )
+
 
         nmf_W = nmf_W.to(self.device)
         nmf_H = nmf_H.to(self.device)
@@ -189,7 +196,8 @@ class KernelModel(nn.Module):
 
                 # Update weight using precomputed NMF factors
                 kmat = self.get_kernel_matrix(x_batch, None) # Shape: (batch_size, n_centers)
-                self.weight.data = torch.mm(kmat, nmf_H.T)
+                # self.weight.data = torch.mm(kmat, nmf_H.T)
+                self.weight.data = torch.mm(nmf_W, nmf_H)
                 del x_batch, y_batch, batch_ids
 
             if save_kernel_matrix:
