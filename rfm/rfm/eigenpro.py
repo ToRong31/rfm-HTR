@@ -5,7 +5,6 @@ from tqdm import tqdm
 import torch.nn as nn
 import numpy as np
 from sklearn.metrics import roc_auc_score
-from .nmf import multiplicative_update
 
 # Assume multiplicative_update, random_initialization, nndsvd_initialization are imported
 
@@ -261,13 +260,7 @@ class KernelModel(nn.Module):
                     val_loss_history.append(tv_score['mse'] >= prev_val_metric)
                 if len(val_loss_history) > early_stopping_window_size:
                     val_loss_history.pop(0)
-                    # Check if validation loss increases too many times...
-                    if sum(val_loss_history) >= early_stopping_window_size - 1:
-                        print(f"Early stopping at epoch {epoch}")
-                        break
-                prev_val_metric = tv_score['binary-acc'] if 'binary-acc' in tv_score else \
-                    tv_score['multiclass-acc'] if 'multiclass-acc' in tv_score else tv_score['mse']
-
+                    # Check if validation loss inc
         res['best_weights'] = best_weights if best_weights is not None else self.weight.cpu().clone()
         self.weight = self.tensor(res['best_weights'])
         print("DONE")
