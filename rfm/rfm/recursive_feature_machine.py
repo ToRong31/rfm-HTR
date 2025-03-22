@@ -1,4 +1,4 @@
-from .eigenpro import KernelModel
+from .eigenpro import KernelModel,asm_nmf_fn_custom
     
 import torch, numpy as np
 from torchmetrics.functional.classification import accuracy
@@ -8,6 +8,7 @@ import hickle
 from .utils import matrix_sqrt
 from time import time
 import wandb
+
 
 class RecursiveFeatureMachine(torch.nn.Module):
 
