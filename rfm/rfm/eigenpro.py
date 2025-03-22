@@ -7,7 +7,7 @@ import numpy as np
 from sklearn.metrics import roc_auc_score
 from .nmf import random_initialization, nndsvd_initialization,multiplicative_update
 
-def nmf_update(A, rank, max_iter, init_mode='nndsvd'):
+def asm_nmf_fn_custom(A, rank, max_iter, init_mode='nndsvd'):
     """
     Perform Multiplicative Update (MU) algorithm for Non-negative Matrix Factorization (NMF).
 
@@ -26,6 +26,7 @@ def nmf_update(A, rank, max_iter, init_mode='nndsvd'):
     elif init_mode == 'nndsvd':
         W, H = nndsvd_initialization(A, rank)
 
+    norms = []
     epsilon = 1.0e-10
     for _ in range(max_iter):
         # Update H
@@ -38,7 +39,10 @@ def nmf_update(A, rank, max_iter, init_mode='nndsvd'):
         WHH_T = W @ H @ H.T + epsilon
         W = W * (AH_T / WHH_T)
 
-    return W, H
+        norm = np.linalg.norm(A - W @ H, 'fro')
+        norms.append(norm)
+
+    return W, H,norms
 
 
 class KernelModel(nn.Module):
@@ -104,7 +108,7 @@ class KernelModel(nn.Module):
         A = kmat.cpu().numpy()
 
         # Perform NMF
-        W, H = nmf_update(A, rank, max_iter, init_mode)
+        W, H ,_= asm_nmf_fn_custom(A, rank, max_iter, init_mode)
 
         # Update weight
         self.weight.data = torch.tensor(W, device=self.device, dtype=self.weight.dtype)
