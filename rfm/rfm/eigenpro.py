@@ -5,45 +5,24 @@ from tqdm import tqdm
 import torch.nn as nn
 import numpy as np
 from sklearn.metrics import roc_auc_score
-from .nmf import random_initialization, nndsvd_initialization,multiplicative_update
+from .nmf import multiplicative_update
 
-def asm_nmf_fn_custom(A, rank, max_iter, init_mode='nndsvd'):
+# Assume multiplicative_update, random_initialization, nndsvd_initialization are imported
+
+def asm_nmf_fn_custom(samples, map_fn, rank=10, max_iter=100, init_mode='nndsvd', verbose=True):
     """
-    Perform Multiplicative Update (MU) algorithm for Non-negative Matrix Factorization (NMF).
-
-    Parameters:
-    - A: Input matrix
-    - rank: Rank of the factorization
-    - max_iter: Maximum number of iterations
-    - init_mode: Initialization mode ('random' or 'nndsvd')
-
-    Returns:
-    - W: Factorized matrix W
-    - H: Factorized matrix H
+    Approximate kernel matrix using custom NMF with multiplicative update.
     """
-    if init_mode == 'random':
-        W, H = random_initialization(A, rank)
-    elif init_mode == 'nndsvd':
-        W, H = nndsvd_initialization(A, rank)
+    kernel_matrix = map_fn(samples, samples)
+    kernel_matrix = np.maximum(kernel_matrix, 0)  # Ensure non-negativity
 
-    norms = []
-    epsilon = 1.0e-10
-    for _ in range(max_iter):
-        # Update H
-        W_TA = W.T @ A
-        W_TWH = W.T @ W @ H + epsilon
-        H = H * (W_TA / W_TWH)
+    W, H, norms = multiplicative_update(kernel_matrix, k=rank, max_iter=max_iter, init_mode=init_mode)
 
-        # Update W
-        AH_T = A @ H.T
-        WHH_T = W @ H @ H.T + epsilon
-        W = W * (AH_T / WHH_T)
+    if verbose:
+        print(f"NMF with init='{init_mode}' completed.")
+        print(f"Final reconstruction error (Frobenius norm): {norms[-1]:.4f}")
 
-        norm = np.linalg.norm(A - W @ H, 'fro')
-        norms.append(norm)
-
-    return W, H,norms
-
+    return torch.from_numpy(W).float(), torch.from_numpy(H).float(), norms
 
 class KernelModel(nn.Module):
     '''Fast Kernel Regression using NMF iteration.'''
@@ -102,17 +81,6 @@ class KernelModel(nn.Module):
         grad = pred - labels
         return grad
 
-    def nmf_iterate(self, x_batch, y_batch, rank, max_iter, init_mode='nndsvd'):
-        # Create matrix A for NMF
-        kmat = self.get_kernel_matrix(x_batch, None)  # kernel_fn(x_batch, self.centers)
-        A = kmat.cpu().numpy()
-
-        # Perform NMF
-        W, H ,_= asm_nmf_fn_custom(A, rank, max_iter, init_mode)
-
-        # Update weight
-        self.weight.data = torch.tensor(W, device=self.device, dtype=self.weight.dtype)
-
     def evaluate(self, X_all, y_all, n_eval, bs,
                  metrics=('mse')):
         p_list = []
@@ -150,10 +118,10 @@ class KernelModel(nn.Module):
         return eval_metrics
 
     def fit(self, X_train, y_train, X_val, y_val, epochs, mem_gb,
-            bs=None,
+            n_subsamples=None, bs=None,
             n_train_eval=5000, run_epoch_eval=True,
             verbose=True, seed=1, classification=False, threshold=1e-5,
-            early_stopping_window_size=6, nmf_rank=5, nmf_max_iter=10, init_mode='nndsvd'):
+            early_stopping_window_size=6, nmf_rank=10, nmf_max_iter=100, nmf_init_mode='nndsvd'):
 
         X_train = X_train.to(self.device)
         y_train = y_train.to(self.device)
@@ -173,9 +141,27 @@ class KernelModel(nn.Module):
                 metrics += ('multiclass-acc',)
 
         n_samples, n_labels = y_train.shape
+        if n_subsamples is None:
+            n_subsamples = min(n_samples, 12000)
+        n_subsamples = min(n_subsamples, n_samples)
+
+        np.random.seed(seed)
+        sample_ids = np.random.choice(n_samples, n_subsamples, replace=False)
+        sample_ids = self.tensor(sample_ids)
+        samples = self.centers[sample_ids]
+
+        # Prepare NMF function
+        nmf_W, nmf_H, nmf_norms = asm_nmf_fn_custom(
+            samples.cpu().numpy(),
+            lambda x, y: self.kernel_fn(self.tensor(x), self.tensor(y)).cpu().numpy(),
+            rank=nmf_rank, max_iter=nmf_max_iter, init_mode=nmf_init_mode, verbose=verbose
+        )
+
+        nmf_W = nmf_W.to(self.device)
+        nmf_H = nmf_H.to(self.device)
 
         if verbose:
-            print(f"bs={bs}, nmf_rank={nmf_rank}, nmf_max_iter={nmf_max_iter}, init_mode={init_mode}")
+            print(f"NMF with rank={nmf_rank}, max_iter={nmf_max_iter}, init_mode='{nmf_init_mode}' completed.")
 
         res = dict()
         initial_epoch = 0
@@ -201,7 +187,9 @@ class KernelModel(nn.Module):
                 x_batch = self.tensor(X_train[batch_ids], dtype=X_train.dtype)
                 y_batch = self.tensor(y_train[batch_ids], dtype=y_train.dtype)
 
-                self.nmf_iterate(x_batch, y_batch, nmf_rank, nmf_max_iter, init_mode)
+                # Update weight using precomputed NMF factors
+                kmat = self.get_kernel_matrix(x_batch, None) # Shape: (batch_size, n_centers)
+                self.weight.data = torch.mm(kmat, nmf_H.T)
                 del x_batch, y_batch, batch_ids
 
             if save_kernel_matrix:
