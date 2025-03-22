@@ -5,6 +5,7 @@ from tqdm import tqdm
 import torch.nn as nn
 import numpy as np
 from sklearn.metrics import roc_auc_score
+from .nmf import multiplicative_update
 
 # Assume multiplicative_update, random_initialization, nndsvd_initialization are imported
 
